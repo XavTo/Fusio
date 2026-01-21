@@ -1,25 +1,32 @@
-#!/usr/bin/env bash
-set -euo pipefail
+echo "[railway] Configure Apache vhost for Fusio…"
 
-echo "[railway] Fix Apache MPM…"
-rm -f /etc/apache2/mods-enabled/mpm_event.* /etc/apache2/mods-enabled/mpm_worker.* 2>/dev/null || true
-a2dismod mpm_event 2>/dev/null || true
-a2dismod mpm_worker 2>/dev/null || true
-a2enmod mpm_prefork 2>/dev/null || true
+# évite les warnings ServerName
+echo "ServerName localhost" > /etc/apache2/conf-available/servername.conf
+a2enconf servername >/dev/null 2>&1 || true
 
-# Railway attend que le process écoute sur $PORT (variable injectée)
-# https://docs.railway.com/guides/public-networking
-if [[ -n "${PORT:-}" ]]; then
-  echo "[railway] Bind Apache to PORT=${PORT}"
-  sed -i "s/^Listen .*/Listen ${PORT}/" /etc/apache2/ports.conf || true
-  sed -i "s/:80>/:${PORT}>/g" /etc/apache2/sites-enabled/000-default.conf 2>/dev/null || true
-fi
+# modules requis
+a2enmod rewrite >/dev/null 2>&1 || true
 
-# Démarre l’entrypoint Fusio d’origine si présent, sinon fallback
-if [[ -x "/docker-entrypoint.sh" ]]; then
-  exec /docker-entrypoint.sh "$@"
-elif [[ -x "/usr/local/bin/docker-entrypoint.sh" ]]; then
-  exec /usr/local/bin/docker-entrypoint.sh "$@"
-else
-  exec supervisord -c /etc/supervisor/supervisord.conf
-fi
+# VHost : IMPORTANT => DocumentRoot sur fusio/public
+cat > /etc/apache2/sites-available/000-default.conf <<EOF
+<VirtualHost *:${PORT}>
+    ServerName localhost
+    DocumentRoot /var/www/html/fusio/public
+
+    <Directory /var/www/html/fusio/public>
+        Options FollowSymLinks
+        AllowOverride All
+        Require all granted
+
+        RewriteEngine On
+        RewriteBase /
+
+        RewriteCond %{REQUEST_FILENAME} !-f
+        RewriteCond %{REQUEST_FILENAME} !-d
+        RewriteRule (.*) /index.php/\$1 [L]
+
+        RewriteCond %{HTTP:Authorization} ^(.*)
+        RewriteRule .* - [e=HTTP_AUTHORIZATION:%1]
+    </Directory>
+</VirtualHost>
+EOF
